@@ -1,0 +1,144 @@
+# Rocket.Chat with SSL Certificate in a Docker Swarm
+
+# Vladimir Mikhalev
+# callvaldemar@gmail.com
+# www.heyvaldemar.com
+
+# Configure Traefik before applying the configuration.
+# Traefik configuration: https://github.com/heyValdemar/traefik-ssl-certificate-docker-swarm
+
+# Deploy Rocket.Chat in a Docker Swarm using the command:
+# docker stack deploy -c rocketchat-traefik-ssl-certificate-docker-swarm.yml rocketchat
+
+version: '3.8'
+
+x-default-opts:
+  &default-opts
+  logging:
+    options:
+      max-size: "10m"
+
+networks:
+  rocketchat-network:
+    driver: overlay
+  traefik-network:
+    external: true
+
+volumes:
+  rocketchat-uploads:
+  rocketchat-mongo:
+  rocketchat-mongo-dump:
+
+services:
+  mongo:
+    <<: *default-opts
+    # Image tag (replace with yours)
+    image: mongo:4.0
+    command: mongod --smallfiles --oplogSize 128 --replSet rs0 --storageEngine=mmapv1
+    volumes:
+     - rocketchat-mongo:/data/db
+     - rocketchat-mongo-dump:/dump
+    networks:
+      - rocketchat-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      # Container resources (replace with yours)
+      resources:
+        limits:
+          cpus: '1.55'
+          memory: 2G
+        reservations:
+          cpus: '0.55'
+          memory: 512M
+
+  mongo-init-replica:
+    <<: *default-opts
+    # Image tag (replace with yours)
+    image: mongo:4.0
+    command: >
+      bash -c
+        "for i in `seq 1 30`; do
+          mongo mongo/rocketchat --eval \"
+            rs.initiate({
+              _id: 'rs0',
+              members: [ { _id: 0, host: 'localhost:27017' } ]})\" &&
+          s=$$? && break || s=$$?;
+          echo \"Tried $$i times. Waiting 5 secs...\";
+          sleep 5;
+        done; (exit $$s)"
+    networks:
+      - rocketchat-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      # Container resources (replace with yours)
+      resources:
+        limits:
+          cpus: '0.55'
+          memory: 1G
+        reservations:
+          cpus: '0.35'
+          memory: 512M
+      restart_policy:
+        condition: none
+    depends_on:
+      - mongo
+
+  rocketchat:
+    <<: *default-opts
+    # Image tag (replace with yours)
+    image: rocket.chat:3.14
+    command: >
+      bash -c
+        "for i in `seq 1 30`; do
+          node main.js &&
+          s=$$? && break || s=$$?;
+          echo \"Tried $$i times. Waiting 5 secs...\";
+          sleep 5;
+        done; (exit $$s)"
+    volumes:
+      - rocketchat-uploads:/app/uploads
+    environment:
+      PORT: 3000
+      # Rocket.Chat URL (replace with yours)
+      ROOT_URL: https://rocketchat.heyvaldemar.net
+      MONGO_URL: mongodb://mongo:27017/rocketchat
+      MONGO_OPLOG_URL: mongodb://mongo:27017/local
+      Accounts_UseDNSDomainCheck: 'false'
+    networks:
+      - rocketchat-network
+      - traefik-network
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == worker
+      # Container resources (replace with yours)
+      resources:
+        limits:
+          cpus: '2.55'
+          memory: 4G
+        reservations:
+          cpus: '1.35'
+          memory: 2G
+      labels:
+        - "traefik.enable=true"
+        # Rocket.Chat URL (replace with yours)
+        - "traefik.http.routers.rocketchat.rule=Host(`rocketchat.heyvaldemar.net`)"
+        - "traefik.http.routers.rocketchat.service=rocketchat"
+        - "traefik.http.routers.rocketchat.entrypoints=websecure"
+        - "traefik.http.services.rocketchat.loadbalancer.server.port=3000"
+        - "traefik.http.routers.rocketchat.tls=true"
+        - "traefik.http.services.rocketchat.loadbalancer.passhostheader=true"
+        - "traefik.http.routers.rocketchat.middlewares=compresstraefik"
+        - "traefik.http.middlewares.compresstraefik.compress=true"
+    depends_on:
+      - mongo
