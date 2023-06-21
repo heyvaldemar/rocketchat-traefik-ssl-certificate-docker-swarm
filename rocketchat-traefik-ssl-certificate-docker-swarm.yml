@@ -67,12 +67,6 @@ services:
       ALLOW_EMPTY_PASSWORD: 'yes'
     networks:
       - rocketchat-network
-    healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
     deploy:
       mode: replicated
       replicas: 1
